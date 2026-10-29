@@ -1,0 +1,142 @@
+<!doctype html>
+<html lang="tr">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, viewport-fit=cover">
+<meta name="theme-color" content="#101827">
+<title>World Conquest — Mobil</title>
+<link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css">
+<style>
+:root{color-scheme:dark;--bg:#0b1220;--panel:#151f30;--line:#2a3950;--text:#f3f6fb;--muted:#a9b7ca;--accent:#69a7ff;--gold:#f7c65b}
+*{box-sizing:border-box}body{margin:0;background:var(--bg);color:var(--text);font:15px system-ui,-apple-system,Segoe UI,Roboto,sans-serif}
+header{padding:14px 16px 10px;background:#101827;border-bottom:1px solid var(--line);position:sticky;top:0;z-index:500}
+h1{font-size:19px;margin:0;font-weight:850;letter-spacing:.4px}header p{margin:4px 0 0;color:var(--muted);font-size:12px}
+main{max-width:900px;margin:auto;padding:12px;display:grid;gap:12px}
+.panel{background:var(--panel);border:1px solid var(--line);border-radius:16px;padding:12px}
+.stats{display:grid;grid-template-columns:repeat(3,1fr);gap:8px}.stat{background:#0d1727;border-radius:11px;padding:9px;text-align:center}.stat b{display:block;font-size:19px}.stat span{font-size:11px;color:var(--muted)}
+#map{height:43vh;min-height:280px;max-height:460px;border-radius:12px;overflow:hidden;background:#0b1726}
+.controls{display:grid;grid-template-columns:1fr 1fr;gap:8px}
+.wheel{background:#0d1727;border:1px solid var(--line);border-radius:12px;padding:12px;text-align:center;min-width:0}
+.wheel small{color:var(--muted);display:block;font-size:11px;text-transform:uppercase;letter-spacing:.8px}
+.wheel strong{display:block;font-size:16px;margin:8px 0;overflow-wrap:anywhere}
+button{border:0;border-radius:11px;background:var(--accent);color:#081323;font-weight:800;padding:12px 10px;font-size:14px;min-height:44px;cursor:pointer}
+button:disabled{opacity:.45}button.secondary{background:#2a3950;color:var(--text)}button.gold{background:var(--gold);color:#251b05}.actions{display:grid;grid-template-columns:1fr 1fr;gap:8px;margin-top:9px}
+#status{font-size:13px;line-height:1.5;color:#dbe6f5;margin-top:9px;min-height:38px}
+.legend{font-size:11px;color:var(--muted);line-height:1.5;margin-top:7px}
+.note{font-size:12px;color:var(--muted);line-height:1.5}.leaflet-container{background:#0b1726}.leaflet-control-attribution{font-size:9px!important}
+@media(min-width:720px){main{grid-template-columns:1fr 330px;align-items:start} .mapPanel{grid-row:span 2}#map{height:68vh;max-height:none}.controls{grid-template-columns:1fr}.stats{grid-template-columns:1fr 1fr 1fr}}
+</style>
+</head>
+<body>
+<header><h1>🌍 WORLD CONQUEST</h1><p>Mobil ülke fethetme oyunu · İlk prototip</p></header>
+<main>
+<section class="panel mapPanel">
+  <div class="stats">
+    <div class="stat"><b id="total">—</b><span>Haritadaki alan</span></div>
+    <div class="stat"><b id="owned">—</b><span>Kontrol edilen</span></div>
+    <div class="stat"><b id="round">0</b><span>Savaş sayısı</span></div>
+  </div>
+  <div style="height:10px"></div><div id="map" aria-label="Etkileşimli dünya haritası"></div>
+  <div class="legend">Haritaya dokunarak ülke/alan adını görebilirsin. Renkler fetheden ülkenin kontrolünü gösterir. Harita verisi internetten yüklenir.</div>
+</section>
+<section class="panel">
+  <div class="controls">
+    <div class="wheel"><small>🎡 Ülke çarkı</small><strong id="countryPick">Henüz çevrilmedi</strong><button id="spinCountry" style="width:100%">Ülke seç</button></div>
+    <div class="wheel"><small>🧭 Pusula çarkı</small><strong id="directionPick">Henüz çevrilmedi</strong><button id="spinDirection" class="secondary" style="width:100%" disabled>Yön seç</button></div>
+  </div>
+  <div class="actions"><button id="battle" class="gold" disabled>⚔️ Savaşı başlat</button><button id="reset" class="secondary">Oyunu sıfırla</button></div>
+  <div id="status" role="status">Harita yükleniyor. İlk açılışta internet bağlantısı gerekir.</div>
+  <p class="note">Savaş sonucu bu ilk sürümde rastgeledir. Gerçek dünyadaki ülkelerle ilgili bir tahmin veya gerçek olay simülasyonu değildir; strateji oyunu mekaniğidir.</p>
+</section>
+</main>
+<script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/@turf/turf@6/turf.min.js"></script>
+<script>
+(() => {
+const DATA_URL='https://raw.githubusercontent.com/datasets/geo-countries/master/data/countries.geojson';
+const DIRECTIONS=[{name:'Kuzey ↑',deg:0},{name:'Kuzeydoğu ↗',deg:45},{name:'Doğu →',deg:90},{name:'Güneydoğu ↘',deg:135},{name:'Güney ↓',deg:180},{name:'Güneybatı ↙',deg:225},{name:'Batı ←',deg:270},{name:'Kuzeybatı ↖',deg:315}];
+const palette=['#4f8cff','#f36f56','#4ec9a3','#c18aff','#f5bd4f','#ff79b0','#5ccbe8','#a4d65e','#f18f3b','#8e9cff'];
+const $=id=>document.getElementById(id);
+const map=L.map('map',{worldCopyJump:true,zoomControl:true,minZoom:1}).setView([18,0],1.5);
+let geoLayer=null, features=[], byName=new Map(), owner={}, selected=null, direction=null, rounds=0, busy=false;
+const styleFor=f=>{const n=getName(f);return {color:'#65758b',weight:.7,fillColor:owner[n]||'#26364a',fillOpacity:owner[n]?.82:.65};};
+function getName(f){const p=f.properties||{};return p.ADMIN||p.name||p.NAME||p.name_en||p.NAME_EN||p.SOVEREIGNT||'Bilinmeyen alan';}
+function getCode(f){const p=f.properties||{};return p.ISO_A3||p.iso_a3||p.ADM0_A3||getName(f);}
+function save(){try{localStorage.setItem('worldConquestSave',JSON.stringify({owner,rounds}));}catch(e){}}
+function load(){try{const x=JSON.parse(localStorage.getItem('worldConquestSave')||'null');if(x){owner=x.owner||{};rounds=x.rounds||0;}}catch(e){}}
+function updateStats(){$('total').textContent=features.length;$('owned').textContent=new Set(Object.keys(owner).map(n=>owner[n])).size;$('round').textContent=rounds;}
+function setStatus(s){$('status').textContent=s;}
+function recolor(){if(geoLayer)geoLayer.setStyle(styleFor);updateStats();save();}
+function centroid(f){try{return turf.centroid(f).geometry.coordinates;}catch(e){return [0,0];}}
+function neighborsOf(f){
+  const out=[]; const center=centroid(f);
+  for(const g of features){if(g===f)continue;const n=getName(g);if(n===getName(f))continue;
+    try{if(turf.booleanIntersects(f,g)){const c=centroid(g);let b=turf.bearing(turf.point(center),turf.point(c));if(b<0)b+=360;out.push({feature:g,bearing:b,distance:turf.distance(turf.point(center),turf.point(c))});}}catch(e){}
+  }
+  return out;
+}
+function nearestDirection(b){let best=DIRECTIONS[0],diff=999;for(const d of DIRECTIONS){let x=Math.abs(b-d.deg);x=Math.min(x,360-x);if(x<diff){diff=x;best=d;}}return best;}
+function spinLabel(el,text){el.textContent=text;}
+function randomFrom(a){return a[Math.floor(Math.random()*a.length)];}
+function resetPick(){selected=null;direction=null;spinLabel($('countryPick'),'Henüz çevrilmedi');spinLabel($('directionPick'),'Henüz çevrilmedi');$('spinDirection').disabled=true;$('battle').disabled=true;}
+$('spinCountry').addEventListener('click',()=>{
+ if(busy||!features.length)return;
+ const available=features.filter(f=>!owner[getName(f)]);
+ const pool=available.length?available:features;
+ selected=randomFrom(pool);direction=null;
+ spinLabel($('countryPick'),'🌀 Çark dönüyor…');spinLabel($('directionPick'),'—');
+ $('spinCountry').disabled=true;$('spinDirection').disabled=true;$('battle').disabled=true;
+ setTimeout(()=>{spinLabel($('countryPick'),getName(selected));$('spinCountry').disabled=false;$('spinDirection').disabled=false;setStatus('Seçilen ülke: '+getName(selected)+'. Şimdi pusulayı çevir.');if(geoLayer){geoLayer.setStyle(styleFor);const layer=byName.get(getName(selected));if(layer){layer.setStyle({color:'#fff',weight:3,fillColor:owner[getName(selected)]||'#f7c65b',fillOpacity:.9});}}},750);
+});
+$('spinDirection').addEventListener('click',()=>{
+ if(!selected||busy)return;
+ direction=randomFrom(DIRECTIONS);spinLabel($('directionPick'),'🌀 Pusula dönüyor…');$('spinDirection').disabled=true;$('battle').disabled=true;
+ setTimeout(()=>{
+  spinLabel($('directionPick'),direction.name);
+  const ns=neighborsOf(selected);
+  const candidates=ns.map(x=>({...x,dir:nearestDirection(x.bearing)})).filter(x=>x.dir.name===direction.name);
+  if(!candidates.length){
+    const nearest=ns.sort((a,b)=>{const da=nearestDirection(a.bearing),db=nearestDirection(b.bearing);const diff=x=>{let z=Math.abs(x-direction.deg);return Math.min(z,360-z)};return diff(a.bearing)-diff(b.bearing);})[0];
+    if(nearest){direction=nearestDirection(nearest.bearing);spinLabel($('directionPick'),direction.name+' (en yakın komşu yönü)');}
+  }
+  const matching=ns.map(x=>({...x,dir:nearestDirection(x.bearing)})).filter(x=>x.dir.name===direction.name);
+  if(!ns.length){setStatus(getName(selected)+' için komşu ülke bulunamadı. Başka bir ülke seç.');$('spinCountry').disabled=false;$('spinDirection').disabled=false;return;}
+  if(!matching.length){setStatus('Bu yönde kara komşusu yok. Pusulayı yeniden çevir veya başka ülke seç.');$('spinDirection').disabled=false;return;}
+  const target=randomFrom(matching).feature;
+  selected._target=target;$('battle').disabled=false;
+  setStatus(getName(selected)+' → '+direction.name+' yönündeki komşu: '+getName(target)+'. Savaşı başlatabilirsin.');
+  const layer=byName.get(getName(target));if(layer){layer.setStyle({color:'#fff',weight:3,fillColor:owner[getName(target)]||'#e85d5d',fillOpacity:.9});}
+ },650);
+});
+$('battle').addEventListener('click',()=>{
+ if(!selected||!selected._target||busy)return;
+ const a=getName(selected),b=getName(selected._target);busy=true;$('battle').disabled=true;
+ const winner=Math.random()<.5?a:b, loser=winner===a?b:a;
+ const color=owner[winner]||palette[Math.floor(Math.random()*palette.length)];
+ owner[winner]=color;
+ for(const [n,c] of Object.entries(owner))if(c===owner[loser])owner[n]=color;
+ owner[loser]=color;rounds++;recolor();
+ setStatus('🏆 '+winner+', '+loser üzerinde kontrol sağladı! Harita güncellendi. Yeni tur için ülke çarkını çevir.');
+ selected=null;direction=null;spinLabel($('countryPick'),'Yeni tur hazır');spinLabel($('directionPick'),'—');$('spinCountry').disabled=false;$('spinDirection').disabled=true;busy=false;
+});
+$('reset').addEventListener('click',()=>{if(!confirm('Tüm fetihleri ve savaş sayısını sıfırlamak istiyor musun?'))return;owner={};rounds=0;localStorage.removeItem('worldConquestSave');resetPick();recolor();setStatus('Oyun sıfırlandı. Ülke çarkını çevirerek başla.');});
+async function init(){
+ load();
+ try{
+  const r=await fetch(DATA_URL);if(!r.ok)throw new Error('Harita verisi indirilemedi');const data=await r.json();
+  features=(data.features||[]).filter(f=>f.geometry&&getName(f)!=='Antarctica'&&getName(f)!=='Bilinmeyen alan');
+  // Skip duplicate names to keep ownership and map selection unambiguous.
+  const seen=new Set();features=features.filter(f=>{const n=getName(f);if(seen.has(n))return false;seen.add(n);return true;});
+  geoLayer=L.geoJSON({type:'FeatureCollection',features},{style:styleFor,onEachFeature:(f,layer)=>{
+   const n=getName(f);byName.set(n,layer);layer.on('click',()=>{setStatus('📍 '+n+(owner[n]?' · Kontrol rengi: '+owner[n]:' · Henüz fethedilmedi'));});
+   layer.bindTooltip(n,{sticky:true,direction:'auto'});
+  }}).addTo(map);
+  map.fitBounds(geoLayer.getBounds(),{padding:[5,5]});
+  updateStats();setStatus('Harita hazır! Ülke çarkını çevirerek oyuna başla.');
+ }catch(e){console.error(e);setStatus('Harita yüklenemedi. İnternet bağlantını kontrol edip sayfayı yenile.');}
+}
+init();
+})();
+</script>
+</body>
+</html>
